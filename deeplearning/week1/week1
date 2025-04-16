@@ -1,0 +1,146 @@
+import gzip
+import numpy as np
+import random
+from collections import defaultdict
+
+# -------- Đọc file MNIST -----------
+def load_images(t10k-images.idx3-ubyte):
+    with gzip.open(t10k-images.idx3-ubyte, 'rb') as f:
+        _ = int.from_bytes(f.read(4), 'big')  # magic
+        n = int.from_bytes(f.read(4), 'big')
+        rows = int.from_bytes(f.read(4), 'big')
+        cols = int.from_bytes(f.read(4), 'big')
+        buf = f.read(rows * cols * n)
+        images = np.frombuffer(buf, dtype=np.uint8).astype(np.float32)
+        return images.reshape(n, rows * cols) / 255.0
+
+def load_labels(t10k-images.idx3-ubyte):
+    with gzip.open(t10k-images.idx3-ubyte, 'rb') as f:
+        _ = int.from_bytes(f.read(4), 'big')  # magic
+        n = int.from_bytes(f.read(4), 'big')
+        buf = f.read(n)
+        return np.frombuffer(buf, dtype=np.uint8)
+
+# -------- Kích hoạt và đạo hàm ----------
+def relu(x): return np.maximum(0, x)
+def relu_derivative(x): return (x > 0).astype(float)
+
+def sigmoid(x): return 1 / (1 + np.exp(-x))
+def sigmoid_derivative(x): return sigmoid(x) * (1 - sigmoid(x))
+
+def softmax(x):
+    e = np.exp(x - np.max(x, axis=1, keepdims=True))
+    return e / np.sum(e, axis=1, keepdims=True)
+
+# -------- Khởi tạo mạng ----------
+class DNN:
+    def __init__(self, input_size, hidden_size, output_size, activation='relu', learning_rate=0.01):
+        self.lr = learning_rate
+        self.activation_name = activation
+
+        # Trọng số
+        self.W1 = np.random.randn(input_size, hidden_size) * np.sqrt(2. / input_size)
+        self.b1 = np.zeros((1, hidden_size))
+        self.W2 = np.random.randn(hidden_size, output_size) * np.sqrt(2. / hidden_size)
+        self.b2 = np.zeros((1, output_size))
+
+    def activate(self, x):
+        return relu(x) if self.activation_name == 'relu' else sigmoid(x)
+
+    def activate_derivative(self, x):
+        return relu_derivative(x) if self.activation_name == 'relu' else sigmoid_derivative(x)
+
+    def forward(self, x):
+        self.z1 = x @ self.W1 + self.b1
+        self.a1 = self.activate(self.z1)
+        self.z2 = self.a1 @ self.W2 + self.b2
+        self.a2 = softmax(self.z2)
+        return self.a2
+
+    def backward(self, x, y_true):
+        m = x.shape[0]
+        y_pred = self.a2
+        y_onehot = np.zeros_like(y_pred)
+        y_onehot[np.arange(m), y_true] = 1
+
+        dz2 = (y_pred - y_onehot) / m
+        dW2 = self.a1.T @ dz2
+        db2 = np.sum(dz2, axis=0, keepdims=True)
+
+        dz1 = dz2 @ self.W2.T * self.activate_derivative(self.z1)
+        dW1 = x.T @ dz1
+        db1 = np.sum(dz1, axis=0, keepdims=True)
+
+        # Gradient descent
+        self.W2 -= self.lr * dW2
+        self.b2 -= self.lr * db2
+        self.W1 -= self.lr * dW1
+        self.b1 -= self.lr * db1
+
+    def predict(self, x):
+        return np.argmax(self.forward(x), axis=1)
+
+    def accuracy(self, x, y):
+        preds = self.predict(x)
+        return np.mean(preds == y)
+
+# -------- Huấn luyện mạng ----------
+def train(model, x_train, y_train, x_test, y_test, epochs=10, batch_size=32):
+    for epoch in range(epochs):
+        indices = np.arange(len(x_train))
+        np.random.shuffle(indices)
+
+        for start in range(0, len(x_train), batch_size):
+            end = start + batch_size
+            batch_idx = indices[start:end]
+            x_batch = x_train[batch_idx]
+            y_batch = y_train[batch_idx]
+
+            model.forward(x_batch)
+            model.backward(x_batch, y_batch)
+
+        acc = model.accuracy(x_test, y_test)
+        print(f"Epoch {epoch + 1}, Test Accuracy: {acc:.4f}")
+    return model.accuracy(x_test, y_test)
+
+# -------- Chạy thử nghiệm ----------
+def run_experiment(hyperparams, runs=5):
+    results = []
+    for i in range(runs):
+        print(f"\n🔁 Run {i+1}/{runs} with {hyperparams}")
+        batch_size, lr, hidden_size, activation = hyperparams
+
+        model = DNN(784, hidden_size, 10, activation=activation, learning_rate=lr)
+        acc = train(model, x_train, y_train, x_test, y_test, epochs=10, batch_size=batch_size)
+        results.append(acc)
+
+    avg = np.mean(results)
+    std = np.std(results)
+    print(f"\n✅ Mean Accuracy: {avg:.4f} | Std: {std:.4f}")
+    return avg, std
+
+# -------- Main ----------
+if __name__ == "__main__":
+    print("📥 Loading MNIST...")
+    x_train = load_images("train-images-idx3-ubyte.gz")
+    y_train = load_labels("train-labels-idx1-ubyte.gz")
+    x_test = load_images("t10k-images-idx3-ubyte.gz")
+    y_test = load_labels("t10k-labels-idx1-ubyte.gz")
+
+    # Thử nghiệm 5 bộ siêu tham số
+    hyper_list = [
+        (32, 0.1, 16, 'relu'),
+        (16, 0.01, 64, 'sigmoid'),
+        (64, 0.05, 32, 'relu'),
+        (128, 0.01, 128, 'sigmoid'),
+        (32, 0.001, 64, 'relu')
+    ]
+
+    summary = defaultdict(dict)
+    for hp in hyper_list:
+        mean_acc, std_acc = run_experiment(hp, runs=5)
+        summary[str(hp)] = {'mean': mean_acc, 'std': std_acc}
+
+    print("\n📊 Tổng kết kết quả:")
+    for k, v in summary.items():
+        print(f"{k}: mean={v['mean']:.4f}, std={v['std']:.4f}")
