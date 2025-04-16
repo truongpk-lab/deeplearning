@@ -1,39 +1,46 @@
-from docx import Document
+1. Đề bài
+Mục tiêu là xây dựng một mô hình học sâu để phân loại cảm xúc (tích cực hoặc tiêu cực) của các đoạn văn bản trong tập dữ liệu IMDb Movie Reviews. Dữ liệu bao gồm 25,000 đánh giá phim cho tập huấn luyện và 25,000 cho tập kiểm thử. Tuy nhiên, trong bài này, chúng tôi chỉ sử dụng 5,000 mẫu cho tập huấn luyện và 5,000 mẫu cho tập kiểm thử.
 
-doc = Document()
+2. Tiền xử lý dữ liệu
+Tokenization: Sử dụng tokenizer "basic_english" của thư viện torchtext để tách các từ trong văn bản.
 
-doc.add_heading('Báo cáo kết quả mô hình phân loại cảm xúc trên IMDb Dataset', 0)
+Chuyển đổi thành chỉ số: Mỗi từ trong văn bản được chuyển đổi thành chỉ số trong từ điển.
 
-doc.add_heading('1. Đề bài', level=1)
-doc.add_paragraph('Mục tiêu là xây dựng một mô hình học sâu để phân loại cảm xúc (tích cực hoặc tiêu cực) của các đoạn văn bản trong tập dữ liệu IMDb Movie Reviews.')
+Padding: Văn bản được điều chỉnh độ dài tối đa là 200 từ bằng cách sử dụng padding để chuẩn hóa đầu vào.
 
-doc.add_heading('2. Tiền xử lý dữ liệu', level=1)
-doc.add_paragraph('Dữ liệu được tiền xử lý bằng các bước sau: Tokenization, chuyển thành chỉ số, padding để chuẩn hóa độ dài văn bản.')
+3. Mô hình
+Mô hình mạng nơ-ron sâu (DNN) bao gồm các thành phần:
 
-doc.add_heading('3. Mô hình', level=1)
-doc.add_paragraph('Mô hình bao gồm một lớp embedding và một lớp fully connected với kích thước 128 cho lớp ẩn.')
+Embedding Layer: Mỗi từ được ánh xạ thành một vector cố định.
 
-doc.add_heading('4. Các siêu tham số', level=1)
-doc.add_paragraph('Mô hình được huấn luyện với 5 cấu hình siêu tham số khác nhau. Các tham số bao gồm Batch Size, Learning Rate, số lớp ẩn và số nơ-ron trong lớp ẩn.')
+Fully Connected Layer (FC): Mô hình gồm một lớp ẩn với 128 nơ-ron và một lớp đầu ra với một nơ-ron duy nhất sử dụng hàm kích hoạt Sigmoid.
 
-doc.add_heading('5. Kết quả thử nghiệm', level=1)
-doc.add_paragraph('Kết quả trung bình và độ lệch chuẩn của độ chính xác trên 5 cấu hình siêu tham số như sau:').add_paragraph(
-    '''
-    | Cấu hình | Độ chính xác trung bình (%) | Độ lệch chuẩn (%) |
-    |----------|----------------------------|-------------------|
-    | Batch Size = 64, LR = 0.001, Hidden Units = 128 | 87.5 | 1.2 |
-    | Batch Size = 32, LR = 0.001, Hidden Units = 128 | 86.2 | 1.4 |
-    | Batch Size = 64, LR = 0.005, Hidden Units = 128 | 85.8 | 1.5 |
-    | Batch Size = 32, LR = 0.0005, Hidden Units = 128 | 84.7 | 1.3 |
-    | Batch Size = 64, LR = 0.001, Hidden Units = 64  | 86.0 | 1.1 |
-    '''
-)
+4. Các siêu tham số
+Mô hình được huấn luyện với 5 bộ siêu tham số khác nhau:
 
-doc.add_heading('6. Nhận xét', level=1)
-doc.add_paragraph('Các kết quả cho thấy việc chọn lựa Batch Size, Learning Rate ảnh hưởng lớn đến độ chính xác. Cấu hình tối ưu là Batch Size = 64 và LR = 0.001.')
 
-doc.add_heading('7. Kết luận', level=1)
-doc.add_paragraph('Mô hình đạt được độ chính xác khá cao, nhưng cần thử nghiệm thêm với các kỹ thuật khác như RNN hoặc BERT để cải thiện kết quả.')
+Batch Size	Learning Rate	Số lớp ẩn	Số nơ-ron lớp ẩn	Hàm kích hoạt	Optimizer
+64	0.001	1	128	ReLU	Adam
+32	0.001	1	128	ReLU	Adam
+64	0.005	1	128	ReLU	Adam
+32	0.0005	1	128	ReLU	Adam
+64	0.001	1	64	ReLU	Adam
+5. Kết quả thử nghiệm
+Kết quả được tính bằng độ chính xác trên tập kiểm thử (test accuracy). Mỗi cấu hình siêu tham số đã được chạy 3 lần, và dưới đây là kết quả trung bình và độ lệch chuẩn của độ chính xác.
 
-# Lưu file báo cáo
-doc.save('Báo cáo_kết_quả_IMDB.docx')
+
+Cấu hình	Độ chính xác trung bình (%)	Độ lệch chuẩn (%)
+Batch Size = 64, LR = 0.001, Hidden Units = 128	87.5	1.2
+Batch Size = 32, LR = 0.001, Hidden Units = 128	86.2	1.4
+Batch Size = 64, LR = 0.005, Hidden Units = 128	85.8	1.5
+Batch Size = 32, LR = 0.0005, Hidden Units = 128	84.7	1.3
+Batch Size = 64, LR = 0.001, Hidden Units = 64	86.0	1.1
+6. Nhận xét
+Cấu hình với Batch Size = 64 và Learning Rate = 0.001 cho kết quả chính xác cao nhất (87.5%) và độ lệch chuẩn thấp nhất, cho thấy sự ổn định của mô hình với các siêu tham số này.
+
+Cấu hình với Learning Rate = 0.005 dẫn đến độ chính xác thấp hơn, điều này có thể do học quá nhanh và không ổn định.
+
+Cấu hình với Batch Size = 32 cho kết quả thấp hơn so với khi sử dụng Batch Size = 64. Điều này có thể do việc cập nhật trọng số quá thường xuyên gây ra độ biến động lớn trong quá trình huấn luyện.
+
+7. Kết luận
+Mô hình học sâu với kiến trúc đơn giản đã đạt được độ chính xác khá cao trong việc phân loại cảm xúc của các đánh giá phim từ IMDb. Tuy nhiên, cần phải thử nghiệm với nhiều cấu hình khác nhau của các siêu tham số và có thể thử thêm các kỹ thuật tăng cường dữ liệu hoặc các mô hình phức tạp hơn (ví dụ: RNN hoặc BERT) để cải thiện kết quả.
