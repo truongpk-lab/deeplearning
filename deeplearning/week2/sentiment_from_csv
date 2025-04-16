@@ -4,93 +4,147 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from torch.nn.utils.rnn import pad_sequence
 from torchtext.data.utils import get_tokenizer
-from torchtext.vocab import build_vocab_from_iterator
+from torchtext.vocab import build_vocab_from_iterator, GloVe
 import pandas as pd
-from collections import Counter
+import numpy as np
+import random
 
-# Cấu hình
-MAX_LEN = 200
-BATCH_SIZE = 64
-EMBED_DIM = 128
-HIDDEN_DIM = 256
+# Cấu hình chung
+MAX_LEN = 300
+EMBED_DIM = 100
 EPOCHS = 5
-LEARNING_RATE = 0.001
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Đọc dữ liệu
-df = pd.read_csv("IMDB Dataset.csv").sample(frac=1, random_state=42).head(10000)
+# Load dữ liệu và chuẩn bị
+df = pd.read_csv("/content/sample_data/IMDB Dataset.csv").sample(frac=1, random_state=42).head(25000)
 texts = df['review'].tolist()
 labels = df['sentiment'].apply(lambda x: 1 if x == 'positive' else 0).tolist()
 
-# Tokenize & Vocab
+# Tokenizer & vocab
 tokenizer = get_tokenizer("basic_english")
-tokenized_texts = [tokenizer(text) for text in texts]
+def yield_tokens(data): 
+    for text in data: yield tokenizer(text)
 
-def yield_tokens(data_iter):
-    for tokens in data_iter:
-        yield tokens
-
-vocab = build_vocab_from_iterator(
-    yield_tokens(tokenized_texts),
-    specials=["<unk>", "<pad>"],
-    max_tokens=10000
-)
+vocab = build_vocab_from_iterator(yield_tokens(texts), specials=["<unk>", "<pad>"], max_tokens=10000)
 vocab.set_default_index(vocab["<unk>"])
 
-# Encode và pad
-def encode(tokens): return torch.tensor([vocab[token] for token in tokens], dtype=torch.long)
-encoded = [encode(tokens[:MAX_LEN]) for tokens in tokenized_texts]
+# Load GloVe
+vectors = GloVe(name='6B', dim=EMBED_DIM)
+embedding_matrix = torch.zeros(len(vocab), EMBED_DIM)
+for idx, token in enumerate(vocab.get_itos()):
+    embedding_matrix[idx] = vectors[token] if token in vectors.stoi else torch.randn(EMBED_DIM) * 0.6
+
+# Encode
+def encode(text): return torch.tensor([vocab[token] for token in tokenizer(text)[:MAX_LEN]])
+encoded = [encode(text) for text in texts]
 padded = pad_sequence(encoded, batch_first=True, padding_value=vocab["<pad>"])[:, :MAX_LEN]
 labels_tensor = torch.tensor(labels, dtype=torch.float)
 
-# Train/test split
-x_train, y_train = padded[:5000], labels_tensor[:5000]
-x_test, y_test = padded[5000:], labels_tensor[5000:]
+# Tách train/test
+x_train, y_train = padded[:20000], labels_tensor[:20000]
+x_test, y_test = padded[20000:], labels_tensor[20000:]
+test_loader = DataLoader(TensorDataset(x_test, y_test), batch_size=64)
 
-train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=BATCH_SIZE, shuffle=True)
-test_loader = DataLoader(TensorDataset(x_test, y_test), batch_size=BATCH_SIZE)
-
-# Mô hình RNN (GRU)
-class SentimentRNN(nn.Module):
-    def __init__(self):
+# Positional Encoding
+class PositionalEncoding(nn.Module):
+    def __init__(self, dim, max_len=5000):
         super().__init__()
-        self.embedding = nn.Embedding(len(vocab), EMBED_DIM, padding_idx=vocab["<pad>"])
-        self.gru = nn.GRU(EMBED_DIM, HIDDEN_DIM, batch_first=True)
-        self.fc = nn.Linear(HIDDEN_DIM, 1)
+        pe = torch.zeros(max_len, dim)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, dim, 2).float() * (-torch.log(torch.tensor(10000.0)) / dim))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.pe = pe.unsqueeze(0)
 
     def forward(self, x):
-        embedded = self.embedding(x)  # (batch, seq_len, embed_dim)
-        _, hidden = self.gru(embedded)  # hidden: (1, batch, hidden_dim)
-        out = self.fc(hidden.squeeze(0))  # (batch, 1)
-        return torch.sigmoid(out).squeeze()
+        return x + self.pe[:, :x.size(1), :].to(x.device)
 
-# Khởi tạo mô hình, loss, optimizer
-model = SentimentRNN().to(DEVICE)
-criterion = nn.BCELoss()
-optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+# Mô hình Transformer-lite
+class TransformerSentiment(nn.Module):
+    def __init__(self, hidden_dim, activation_fn):
+        super().__init__()
+        self.embedding = nn.Embedding.from_pretrained(embedding_matrix, freeze=False, padding_idx=vocab["<pad>"])
+        self.pos_encoder = PositionalEncoding(EMBED_DIM)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=EMBED_DIM, nhead=4, dim_feedforward=hidden_dim, dropout=0.3, batch_first=True)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=2)
+        self.fc = nn.Sequential(
+            nn.Linear(EMBED_DIM, 64),
+            activation_fn(),
+            nn.Dropout(0.3),
+            nn.Linear(64, 1)
+        )
 
-# Huấn luyện
-for epoch in range(EPOCHS):
-    model.train()
-    total_loss = 0
-    for xb, yb in train_loader:
-        xb, yb = xb.to(DEVICE), yb.to(DEVICE)
-        optimizer.zero_grad()
-        preds = model(xb)
-        loss = criterion(preds, yb)
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
-    print(f"Epoch {epoch+1}/{EPOCHS} - Loss: {total_loss:.4f}")
+    def forward(self, x):
+        mask = (x == vocab["<pad>"])
+        x = self.embedding(x)
+        x = self.pos_encoder(x)
+        x = self.transformer_encoder(x, src_key_padding_mask=mask)
+        x = x.mean(dim=1)
+        return torch.sigmoid(self.fc(x)).squeeze()
 
-# Đánh giá
-model.eval()
-correct = total = 0
-with torch.no_grad():
-    for xb, yb in test_loader:
-        xb, yb = xb.to(DEVICE), yb.to(DEVICE)
-        preds = (model(xb) > 0.5).float()
-        correct += (preds == yb).sum().item()
-        total += yb.size(0)
+# Cấu hình siêu tham số
+configs = [
+    {"batch_size": 32, "lr": 1e-3, "hidden_dim": 128, "activation": nn.ReLU, "optimizer": optim.Adam},
+    {"batch_size": 64, "lr": 5e-4, "hidden_dim": 256, "activation": nn.ReLU, "optimizer": optim.AdamW},
+    {"batch_size": 128, "lr": 1e-3, "hidden_dim": 512, "activation": nn.Tanh, "optimizer": optim.SGD},
+    {"batch_size": 64, "lr": 1e-4, "hidden_dim": 256, "activation": nn.GELU, "optimizer": optim.Adam},
+    {"batch_size": 32, "lr": 5e-4, "hidden_dim": 128, "activation": nn.ReLU, "optimizer": optim.RMSprop},
+]
 
-print(f"✅ Test Accuracy: {100 * correct / total:.2f}%")
+# Huấn luyện & đánh giá
+results = []
+for idx, cfg in enumerate(configs):
+    accs = []
+    for run in range(3):
+        model = TransformerSentiment(cfg["hidden_dim"], cfg["activation"]).to(DEVICE)
+        criterion = nn.BCELoss()
+        optimizer = cfg["optimizer"](model.parameters(), lr=cfg["lr"], weight_decay=1e-5)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.5)
+
+        # Loader
+        train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=cfg["batch_size"], shuffle=True)
+
+        # Train
+        for epoch in range(EPOCHS):
+            model.train()
+            for xb, yb in train_loader:
+                xb, yb = xb.to(DEVICE), yb.to(DEVICE)
+                optimizer.zero_grad()
+                output = model(xb)
+                loss = criterion(output, yb)
+                loss.backward()
+                optimizer.step()
+            scheduler.step()
+
+        # Eval
+        model.eval()
+        correct, total = 0, 0
+        with torch.no_grad():
+            for xb, yb in test_loader:
+                xb, yb = xb.to(DEVICE), yb.to(DEVICE)
+                preds = (model(xb) > 0.5).float()
+                correct += (preds == yb).sum().item()
+                total += yb.size(0)
+        acc = 100 * correct / total
+        accs.append(acc)
+        print(f"[Config {idx+1}] Run {run+1}: Accuracy = {acc:.2f}%")
+
+    mean_acc = np.mean(accs)
+    std_acc = np.std(accs)
+    results.append((cfg, mean_acc, std_acc))
+    print(f"\n✅ Config {idx+1}: Mean Acc = {mean_acc:.2f}%, Std = {std_acc:.2f}%\n{'-'*50}")
+
+# In kết quả tổng hợp
+print("\n🎯 Tổng kết kết quả các cấu hình:")
+for i, (cfg, mean_acc, std_acc) in enumerate(results):
+    print(f"Config {i+1}: {cfg} ➤ Mean Acc: {mean_acc:.2f}%, Std: {std_acc:.2f}%")
+# Vẽ biểu đồ loss cho mỗi cấu hình
+    plt.figure(figsize=(8, 6))
+    for run_loss in losses:
+        plt.plot(range(1, EPOCHS+1), run_loss, marker='o')
+    plt.title(f"Loss for Config {i+1}")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.grid(True)
+    plt.legend([f"Run {i+1}" for i in range(3)])
+    plt.show()
