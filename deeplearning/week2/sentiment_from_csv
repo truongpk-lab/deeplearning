@@ -1,0 +1,92 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+from torch.nn.utils.rnn import pad_sequence
+import get_tokenizer
+from collections import Counter
+from torchtext.vocab import Vocab
+import pandas as pd
+
+# Cấu hình
+MAX_LEN = 200
+BATCH_SIZE = 64
+EMBED_DIM = 64
+HIDDEN_DIM = 128
+EPOCHS = 5
+LEARNING_RATE = 0.001
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Đọc dữ liệu
+df = pd.read_csv("IMDB Dataset.csv").sample(frac=1, random_state=42)
+df = df.head(10000)
+texts = df['review'].tolist()
+labels = df['sentiment'].apply(lambda x: 1 if x == 'positive' else 0).tolist()
+
+# Tokenize & tạo vocab
+tokenizer = get_tokenizer("basic_english")
+counter = Counter()
+tokenized_texts = []
+
+for text in texts:
+    tokens = tokenizer(text)
+    tokenized_texts.append(tokens)
+    counter.update(tokens)
+
+vocab = Vocab(counter, max_size=10000, specials=['<unk>', '<pad>'])
+vocab.set_default_index(vocab['<unk>'])
+
+# Encode
+def encode(tokens): return torch.tensor([vocab[token] for token in tokens], dtype=torch.long)
+encoded = [encode(tokens[:MAX_LEN]) for tokens in tokenized_texts]
+padded = pad_sequence(encoded, batch_first=True, padding_value=vocab['<pad>'])[:, :MAX_LEN]
+labels_tensor = torch.tensor(labels, dtype=torch.float)
+
+# Tách train/test
+x_train, y_train = padded[:5000], labels_tensor[:5000]
+x_test, y_test = padded[5000:], labels_tensor[5000:]
+
+train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=BATCH_SIZE, shuffle=True)
+test_loader = DataLoader(TensorDataset(x_test, y_test), batch_size=BATCH_SIZE)
+
+# Mô hình
+class SentimentNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.embed = nn.Embedding(len(vocab), EMBED_DIM, padding_idx=vocab['<pad>'])
+        self.fc = nn.Sequential(
+            nn.Linear(EMBED_DIM, HIDDEN_DIM),
+            nn.ReLU(),
+            nn.Linear(HIDDEN_DIM, 1)
+        )
+
+    def forward(self, x):
+        x = self.embed(x).mean(dim=1)
+        return torch.sigmoid(self.fc(x)).squeeze()
+
+model = SentimentNet().to(DEVICE)
+criterion = nn.BCELoss()
+optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+
+# Huấn luyện
+for epoch in range(EPOCHS):
+    model.train()
+    for xb, yb in train_loader:
+        xb, yb = xb.to(DEVICE), yb.to(DEVICE)
+        optimizer.zero_grad()
+        loss = criterion(model(xb), yb)
+        loss.backward()
+        optimizer.step()
+    print(f"Epoch {epoch+1}/{EPOCHS} completed.")
+
+# Đánh giá
+model.eval()
+correct = total = 0
+with torch.no_grad():
+    for xb, yb in test_loader:
+        xb, yb = xb.to(DEVICE), yb.to(DEVICE)
+        preds = (model(xb) > 0.5).float()
+        correct += (preds == yb).sum().item()
+        total += yb.size(0)
+
+print(f"Test Accuracy: {100 * correct / total:.2f}%")
